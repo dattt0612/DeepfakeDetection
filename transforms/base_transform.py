@@ -6,21 +6,25 @@ import torch.nn as nn
 from typing_extensions import override
 from utils.get_device import GetDevice
 
-class Transform(ABC, nn.Module, GetDevice):
+class Transform(ABC, nn.Module):
   def __init__(self):
     ABC.__init__(self)
     nn.Module.__init__(self)
-    GetDevice.__init__(self)
+    self.register_buffer("_device_tracker", torch.empty(0))
+    
+  @property
+  def device(self):
+    return self._device_tracker.device
 
   @torch.no_grad()
-  def __call__(self, x):
-    return super().__call__(x)
+  def __call__(self, data):
+    return super().__call__(data)
 
-  def forward(self, x: Dict[str, Any]) -> Dict[str, Any]:
-    return self.apply(x)
+  def forward(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    return self.apply(data)
 
   @abstractmethod
-  def apply(self, x: Dict[str, Any]) -> Dict[str, Any]:
+  def apply(self, data: Dict[str, Any]) -> Dict[str, Any]:
     pass
 
 class ProbTransform(Transform):
@@ -36,26 +40,26 @@ class ProbTransform(Transform):
     return self.is_first_apply() or torch.rand(1).item() < self.p
 
   @override
-  def forward(self, x: Dict[str, Any]) -> Dict[str, Any]:
+  def forward(self, data: Dict[str, Any]) -> Dict[str, Any]:
     if self.should_apply():
-      x = self.apply(x)
+      data = self.apply(data)
 
       # handle add new key
       if self.is_first_apply():
-        self.keys = set(x.keys())
+        self.keys = set(data.keys())
       
       for k in self.keys:
-        if k not in x:
-          x[k] = None
+        if k not in data:
+          data[k] = None
       
-      return x
+      return data
       
 class ProbBatchTransform(ProbTransform):
   def __init__(self, p: float = 0.5):
     super().__init__(p)
   
-  def get_bs(self, x: Dict[str, Any]) -> int:
-    first = next(iter(x.values()))
+  def get_bs(self, data: Dict[str, Any]) -> int:
+    first = next(iter(data.values()))
     return len(first)
   
   def get_applied_indices(self, bs: int):
@@ -67,20 +71,20 @@ class ProbBatchTransform(ProbTransform):
     applied_indices = applied_mask.nonzero(as_tuple=True)[0]
     return applied_indices
 
-  def get_applied_samples(self, x: Dict[str, Any]):
-    bs = self.get_bs(x)
+  def get_applied_samples(self, data: Dict[str, Any]):
+    bs = self.get_bs(data)
     applied_indices = self.get_applied_indices(bs)
     applied_samples = {
       k: v[applied_indices]
-      for k, v in x.items()
+      for k, v in data.items()
     }
     return applied_indices, applied_samples
 
   @override
-  def forward(self, x):
-    applied_indices, applied_samples = self.get_applied_samples(x)
+  def forward(self, data):
+    applied_indices, applied_samples = self.get_applied_samples(data)
     if len(applied_indices) == 0:
-      return x
+      return data
     
     applied_samples = self.apply(applied_samples)
 
@@ -89,18 +93,18 @@ class ProbBatchTransform(ProbTransform):
       self.keys = applied_samples.keys()
     
     for k in self.keys:
-      if k not in x:
-        x[k] = None
+      if k not in data:
+        data[k] = None
 
 
-    for k in x.keys():
-      if torch.is_tensor(x[k]):
-        x[k][applied_indices] = applied_samples[k]
-      elif isinstance(x[k], list):
+    for k in data.keys():
+      if torch.is_tensor(data[k]):
+        data[k][applied_indices] = applied_samples[k]
+      elif isinstance(data[k], list):
         for idx, val in zip(applied_indices, applied_samples[k]):
-          x[k][idx] = val
+          data[k][idx] = val
 
-    return x
+    return data
 
 class SequentialTransform(Transform):
   def __init__(self, *transforms: Sequence[Transform]) -> None:
@@ -108,10 +112,10 @@ class SequentialTransform(Transform):
     self.transforms = nn.ModuleList(transforms)
   
   @override
-  def apply(self, x: Dict[str, Any]) -> Dict[str, Any]:
+  def apply(self, data: Dict[str, Any]) -> Dict[str, Any]:
     for transform in self.transforms:
-      x = transform(x)
-    return x
+      data = transform(data)
+    return data
   
 
     
